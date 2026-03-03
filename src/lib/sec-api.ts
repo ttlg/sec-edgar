@@ -124,8 +124,24 @@ function buildQuery(params: Record<string, QueryValue>): string {
   return query.toString()
 }
 
+async function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function fetchWithRetry(url: string, maxRetries = 3): Promise<Response> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const res = await fetch(url, { headers: secHeaders() })
+    if (res.status === 429 && attempt < maxRetries) {
+      await sleep(1000 * (attempt + 1))
+      continue
+    }
+    return res
+  }
+  throw new Error(`SEC request failed after ${maxRetries} retries for ${url}`)
+}
+
 async function requestJson<T>(url: string): Promise<T> {
-  const res = await fetch(url, { headers: secHeaders() })
+  const res = await fetchWithRetry(url)
   if (!res.ok) {
     throw new Error(`SEC request failed (${res.status}) for ${url}`)
   }
@@ -138,7 +154,7 @@ async function requestJson<T>(url: string): Promise<T> {
 }
 
 async function requestText(url: string): Promise<string> {
-  const res = await fetch(url, { headers: secHeaders() })
+  const res = await fetchWithRetry(url)
   if (!res.ok) {
     throw new Error(`SEC request failed (${res.status}) for ${url}`)
   }
@@ -423,16 +439,15 @@ export async function fetchInsiderTrades(ticker: string, limit: number): Promise
 
   const candidates = filings.filter((filing) => filing.accessionNumber).slice(0, Math.max(limit * 3, 20))
 
-  const parsed = await Promise.all(
-    candidates.map(async (filing) => {
-      try {
-        const xml = await fetchForm4Xml(cik, filing.accessionNumber)
-        return parseForm4Xml(xml, filing.date)
-      } catch {
-        return []
-      }
-    })
-  )
+  const parsed: InsiderRow[][] = []
+  for (const filing of candidates) {
+    try {
+      const xml = await fetchForm4Xml(cik, filing.accessionNumber)
+      parsed.push(parseForm4Xml(xml, filing.date))
+    } catch {
+      parsed.push([])
+    }
+  }
 
   const deduped = Array.from(
     new Map(
